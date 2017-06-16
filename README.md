@@ -1,2 +1,17 @@
 # os-experiment-4
 osh实验4
+漏洞编号：CVE-2016-5195
+执行方式：./run.sh
+
+cowroot.c文件主要参考https://github.com/dirtycow/dirtycow.github.io/wiki/PoCs
+
+
+漏洞分析：
+
+  当调用write系统调用向/proc/self/mem文件中写入数据时，进入内核态后内核会调用get_user_pages函数获取要写入内存地址。get_user_pages会调用follow_page_mask来获取这块内存的页表项，并同时要求页表项所指向的内存映射具有可写的权限。
+  
+  第一次获取内存的页表项会因为缺页而失败。get_user_page调用faultin_page进行缺页处理后第二次调用follow_page_mask获取这块内存的页表项，如果需要获取的页表项指向的是一个只读的映射，那第二次获取也会失败。这时候get_user_pages函数会第三次调用follow_page_mask来获取该内存的页表项，并且不再要求页表项所指向的内存映射具有可写的权限，这时是可以成功获取的，获取成功后内核会对这个只读的内存进行强制的写入操作。如果写入的虚拟内存是一个VM_PRIVATE的映射，那在缺页的时候内核就会执行COW操作产生一个副本来进行写入，写入的内容是不会同步到文件中的。如果写入的虚拟内存是一个VM_SHARE的映射，那mmap能够映射成功的充要条件就是进程拥有对该文件的写权限，这样写入的内容同步到文件中也不算越权了。
+  
+  但是，在上述流程中，如果第二次获取页表项失败之后，另一个线程调用madvice(addr,addrlen, MADV_DONTNEED),其中addr~addr+addrlen是一个只读文件的VM_PRIVATE的只读内存映射，那该映射的页表项会被置空。这时如果get_user_pages函数第三次调用follow_page_mask来获取该内存的页表项。由于这次调用不再要求该内存映射具有写权限，所以在缺页处理的时候内核也不再会执行COW操作产生一个副本以供写入。所以缺页处理完成后后第四次调用follow_page_mask获取这块内存的页表项的时候，不仅可以成功获取，而且获取之后强制的写入的内容也会同步到映射的只读文件中。从而导致了只读文件的越权写。
+ 
+ 参考：（http://bobao.360.cn/learning/detail/3132.html）
